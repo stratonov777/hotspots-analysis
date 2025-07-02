@@ -32,7 +32,7 @@ osm_base_path     <- here::here("data", "raw", "OSM")
 processed_base_path <- here::here("data", "processed", "OSM")
 
 # Целевая система координат
-target_crs <- "EPSG:32637" # WGS 84 / UTM zone 37N
+target_crs <- "ESRI:102025"
 
 # Информация об исходных OSM-слоях
 osm_layers_info <- list(
