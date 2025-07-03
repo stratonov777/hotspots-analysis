@@ -97,7 +97,7 @@ CONFIG <- list(
   
   # Фильтр по месяцам. Оставьте NULL, чтобы не фильтровать.
   # Пример: c(4, 5, 6, 7, 8, 9) для теплого сезона.
-  filter_months = 5,
+  filter_months = NULL,
   
   # Фильтр по годам. Оставьте NULL, чтобы не фильтровать.
   # Пример: 2015:2023. Полный диапазон: 2000:2023.
@@ -117,6 +117,7 @@ CONFIG <- list(
   # Список предикторов для исключения (сработает, если predictor_selection_mode = "all").
   # Скопируйте нужные имена из списка ниже. Пример: c("dem", "dist_roads").
   #
+  # Если хотите оставить все предикторы тогда указываете NULL
   # ПОЛНЫЙ СПИСОК ВОЗМОЖНЫХ ПРЕДИКТОРОВ:
   #   Временные: "month_sin", "month_cos"
   #   Климат: "temperature", "precipitation"
@@ -124,7 +125,7 @@ CONFIG <- list(
   #   Статические: "dem"
   #   Расстояния: "dist_roads", "dist_railways", "dist_water_a", "dist_waterways", "dist_buildings_a"
   #   Тип поверхности: "lc_10", "lc_20", "lc_30", "lc_40", "lc_50", "lc_60", "lc_80", "lc_90", "lc_100"
-  predictors_to_exclude = NULL,
+  predictors_to_exclude = c("lc_10", "lc_20", "lc_30", "lc_40", "lc_50", "lc_60", "lc_80", "lc_90", "lc_100"),
   
   # Предикторы по умолчанию для интерактивного режима.
   default_selected_predictors = c("temperature", "precipitation", "dem"),
@@ -391,7 +392,6 @@ run_modeling_experiment <- function(CONF) {
                         col_types = cols(),
                         progress = FALSE)
   
-  # >> АДАПТАЦИЯ <<
   # Фильтруем по одному или нескольким регионам. Оператор %in% работает и с одним, и с вектором значений.
   if (!is.null(CONF$filter_region)) {
     data_to_process <- full_data %>% filter(region %in% CONF$filter_region)
@@ -415,14 +415,40 @@ run_modeling_experiment <- function(CONF) {
     # Для интерактивной карты нам нужен базовый shp-файл только одного региона
     path_base_shp <- file.path(CONF$path_borders_dir,
                                paste0(CONF$filter_region[1], ".shp"))
+    
     if (file.exists(path_base_shp)) {
       base_map_sf <- st_read(path_base_shp, quiet = TRUE) %>% st_transform(4326)
-      # ... (остальная логика интерактивной карты)
+      
+      # >> ДОБАВЛЕННЫЙ КОД <<
+      # Создаем интерактивную карту
+      interactive_map_viewer <- leaflet(base_map_sf) %>% 
+        addProviderTiles(providers$Esri.WorldImagery, group = "Спутник") %>%
+        addProviderTiles(providers$OpenStreetMap, group = "Карта") %>%
+        addPolygons(weight = 2, fillOpacity = 0.1, color = "yellow", group = "Граница региона") %>%
+        addLayersControl(baseGroups = c("Спутник", "Карта"),
+                         overlayGroups = "Граница региона",
+                         options = layersControlOptions(collapsed = FALSE))
+      
+      # Запускаем гаджет для рисования
+      drawn_data <- mapedit::editMap(interactive_map_viewer, title = "Нарисуйте полигон для анализа")
+      
+      # Проверяем, нарисовал ли пользователь что-то, и сохраняем геометрию
+      if (!is.null(drawn_data$finished) && nrow(drawn_data$finished) > 0) {
+        sub_region_polygon <- drawn_data$finished
+        message("Полигон для интерактивной фильтрации успешно создан.")
+      } else {
+        message("Интерактивная сессия завершена без создания полигона.")
+      }
+      
+    } else {
+      warning(paste("Базовый shape-файл для региона", CONF$filter_region[1], "не найден. Интерактивная фильтрация невозможна."))
     }
   }
   
+  # Применяем фильтрующий полигон (если он был создан)
   if (!is.null(sub_region_polygon)) {
-    # >> АДАПТАЦИЯ << Используем нашу целевую проекцию ESRI:102025
+    message("Применение географического фильтра...")
+    # Используем нашу целевую проекцию ESRI:102025
     sub_region_polygon_proj <- st_transform(sub_region_polygon, crs = "ESRI:102025")
     points_sf <- st_as_sf(
       data_to_process,
@@ -600,12 +626,14 @@ run_modeling_experiment <- function(CONF) {
         dpi = 300
       )
     }, error = function(e) {
+      
     })
   }
   message("Графики важности признаков сохранены.")
   
   message(paste("\n--- ЭКСПЕРИМЕНТ", exp_name, "УСПЕШНО ЗАВЕРШЕН ---"))
 }
+
 
 # ===================================================================
 # --- БЛОК 5: ЗАПУСК КОНВЕЙЕРА ---
@@ -614,3 +642,132 @@ run_modeling_experiment <- function(CONF) {
 # 2. Запустите эту строку, чтобы выполнить весь эксперимент.
 
 run_modeling_experiment(CONFIG)
+
+
+# ===================================================================
+# --- БЛОК 6: ЗАПУСК В ЦИКЛЕ ПО КАЖДОМУ РЕГИОНУ (ОТДЕЛЬНО) ---
+# ===================================================================
+# НАЗНАЧЕНИЕ: Построить модели для каждого региона по отдельности,
+# используя одинаковые настройки из CONFIG.
+
+# # 1. Задайте регионы для анализа. Пример c("Bashkortostan", "Chelyabinsk", "Khanty-Mansiy", "Sverdlovsk", "Tyumen", "Voronezh", "Yamal-Nenets", "Kurgan")
+# all_regions_for_loop <- c("Bashkortostan", "Chelyabinsk", "Khanty-Mansiy", "Sverdlovsk", "Tyumen", "Voronezh", "Yamal-Nenets", "Kurgan")
+# 
+# # 2. Запускаем цикл
+# for (current_region in all_regions_for_loop) {
+#   message(paste("\n\n#######################################################"))
+#   message(paste("--- ЗАПУСК АНАЛИЗА ДЛЯ РЕГИОНА:", current_region, "---"))
+#   message(paste("#######################################################\n"))
+# 
+#   temp_config <- CONFIG
+#   temp_config$filter_region <- current_region # Устанавливаем фильтр на текущий регион
+#   temp_config$experiment_name <- NULL         # Сбрасываем имя для авто-генерации
+# 
+#   tryCatch({ run_modeling_experiment(temp_config) },
+#            error = function(e) { message(paste("!!! ОШИБКА в анализе для региона", current_region, ":", e$message, "!!!")) })
+# }
+# 
+# message("\n\n--- ВСЕ ЭКСПЕРИМЕНТЫ ПО РЕГИОНАМ ЗАВЕРШЕНЫ ---")
+
+
+# ===================================================================
+# --- БЛОК 7: ЗАПУСК В ЦИКЛЕ ПО РЕГИОНАМ И МЕСЯЦАМ ---
+# ===================================================================
+# НАЗНАЧЕНИЕ: Построить отдельную модель для каждого месяца в каждом регионе.
+
+# # 1. Задайте регионы и месяцы для анализа.Пример c("Bashkortostan", "Chelyabinsk", "Khanty-Mansiy", "Sverdlovsk", "Tyumen", "Voronezh", "Yamal-Nenets", "Kurgan")
+# all_regions_for_loop <- c("Bashkortostan", "Chelyabinsk", "Khanty-Mansiy", "Sverdlovsk", "Tyumen", "Voronezh", "Yamal-Nenets", "Kurgan")
+# months_to_analyze <- 1:12 # Все месяцы
+# 
+# # 2. Запускаем вложенный цикл
+# for (current_region in all_regions_for_loop) {
+#   message(paste("\n\n#######################################################"))
+#   message(paste("--- НАЧАЛО СЕРИИ ПО МЕСЯЦАМ ДЛЯ РЕГИОНА:", current_region, "---"))
+# 
+#   for (month_number in months_to_analyze) {
+#     message(paste("\n--- Анализ для месяца:", month_number, "---"))
+# 
+#     temp_config <- CONFIG
+#     temp_config$filter_region <- current_region
+#     temp_config$filter_months <- month_number
+#     # Исключаем предикторы времени, так как они бессмысленны при фильтрации по одному месяцу
+#     temp_config$predictors_to_exclude <- c(CONFIG$predictors_to_exclude, "month_sin", "month_cos")
+#     temp_config$experiment_name <- NULL
+# 
+#     tryCatch({ run_modeling_experiment(temp_config) },
+#              error = function(e) { message(paste("!!! ОШИБКА в анализе для месяца", month_number, ":", e$message, "!!!")) })
+#   }
+# }
+# message("\n\n--- ВСЕ ЭКСПЕРИМЕНТЫ ПО МЕСЯЦАМ ЗАВЕРШЕНЫ ---")
+
+
+# ===================================================================
+# --- БЛОК 8: ЗАПУСК В ЦИКЛЕ ПО РЕГИОНАМ И ТИПАМ ЛАНДШАФТА ---
+# ===================================================================
+# НАЗНАЧЕНИЕ: Построить отдельную модель для каждого типа земного покрова в каждом регионе.
+
+# # 1. Задайте регионы и типы ландшафта для анализа.Пример c("Bashkortostan", "Chelyabinsk", "Khanty-Mansiy", "Sverdlovsk", "Tyumen", "Voronezh", "Yamal-Nenets", "Kurgan")
+# all_regions_for_loop <- c("Bashkortostan", "Chelyabinsk", "Khanty-Mansiy", "Sverdlovsk", "Tyumen", "Voronezh", "Yamal-Nenets", "Kurgan")
+# # Все типы ландшафта которые доступны для анализа
+# all_lc_types <- paste0("lc_", c(10, 20, 30, 40, 50, 60, 80, 90, 100))
+# # Пример: c("lc_10", "lc_40") только леса и с/х земли
+# landcover_types_to_analyze <- all_lc_types
+# 
+# # 2. Запускаем вложенный цикл
+# for (current_region in all_regions_for_loop) {
+#   message(paste("\n\n#######################################################"))
+#   message(paste("--- НАЧАЛО СЕРИИ ПО ЛАНДШАФТАМ ДЛЯ РЕГИОНА:", current_region, "---"))
+# 
+#   for (current_lc_type in landcover_types_to_analyze) {
+#     message(paste("\n--- Анализ для типа ландшафта:", current_lc_type, "---"))
+# 
+#     temp_config <- CONFIG
+#     temp_config$filter_region <- current_region
+#     temp_config$filter_landcover_type <- current_lc_type
+#     # Исключаем остальные типы ландшафта из предикторов
+#     lc_to_exclude <- setdiff(all_lc_types, current_lc_type)
+#     temp_config$predictors_to_exclude <- c(CONFIG$predictors_to_exclude, lc_to_exclude)
+#     temp_config$experiment_name <- NULL
+# 
+#     tryCatch({ run_modeling_experiment(temp_config) },
+#              error = function(e) { message(paste("!!! ОШИБКА в анализе для", current_lc_type, ":", e$message, "!!!")) })
+#   }
+# }
+# message("\n\n--- ВСЕ ЭКСПЕРИМЕНТЫ ПО ТИПАМ ЛАНДШАФТА ЗАВЕРШЕНЫ ---")
+
+
+# ===================================================================
+# --- БЛОК 9: ЗАПУСК В ЦИКЛЕ ПО РЕГИОНАМ И СЕЗОНАМ ---
+# ===================================================================
+# НАЗНАЧЕНИЕ: Построить отдельные "сезонные" модели для каждого региона.
+
+# # 1. Задайте регионы и определите сезоны
+# all_regions_for_loop <- c("Bashkortostan", "Chelyabinsk", "Khanty-Mansiy", "Sverdlovsk", "Tyumen", "Voronezh", "Yamal-Nenets", "Kurgan")
+# seasons <- list(
+#   Winter = c(12, 1, 2),
+#   Spring = c(3, 4, 5),
+#   Summer = c(6, 7, 8),
+#   Autumn = c(9, 10, 11)
+# )
+# 
+# # 2. Запускаем вложенный цикл
+# for (current_region in all_regions_for_loop) {
+#   message(paste("\n\n#######################################################"))
+#   message(paste("--- НАЧАЛО СЕРИИ ПО СЕЗОНАМ ДЛЯ РЕГИОНА:", current_region, "---"))
+# 
+#   for (season_name in names(seasons)) {
+#     current_months <- seasons[[season_name]]
+#     message(paste("\n--- Анализ для сезона:", season_name, "(месяцы:", paste(current_months, collapse=", "), ") ---"))
+# 
+#     temp_config <- CONFIG
+#     temp_config$filter_region <- current_region
+#     temp_config$filter_months <- current_months
+#     # Исключаем предикторы времени
+#     temp_config$predictors_to_exclude <- c(CONFIG$predictors_to_exclude, "month_sin", "month_cos")
+#     temp_config$experiment_name <- NULL
+# 
+#     tryCatch({ run_modeling_experiment(temp_config) },
+#              error = function(e) { message(paste("!!! ОШИБКА в анализе для сезона", season_name, ":", e$message, "!!!")) })
+#   }
+# }
+# message("\n\n--- ВСЕ ЭКСПЕРИМЕНТЫ ПО СЕЗОНАМ ЗАВЕРШЕНЫ ---")
